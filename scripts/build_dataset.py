@@ -30,50 +30,71 @@ def main(category: str = "math.DG", n_papers: int = 8, max_per_paper: int = 12, 
     papers = search_recent(category, max_results=n_papers)
     console.print(f"got {len(papers)} paper records")
 
-    pairs: list[dict] = []
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), BarColumn(),
-                  TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
-                  console=console) as prog:
-        t = prog.add_task("papers", total=len(papers))
-        for p in papers:
-            arxiv_id = p.get_short_id().split("v")[0]
-            paper_dir = download_source(p, RAW)
-            if paper_dir is None:
-                prog.advance(t); continue
-            specs = extract_envs(arxiv_id, paper_dir, max_per_paper=max_per_paper)
-            for i, spec in enumerate(specs):
-                if len(pairs) >= max_total:
-                    break
-                try:
-                    img = render_latex(spec.full_latex, dpi=200)
-                except RenderError:
-                    continue
-                # Skip ridiculously narrow/short
-                if img.width < 40 or img.height < 16:
-                    continue
-                stem = f"{arxiv_id}_{i:03d}"
-                img_path = RENDERED / f"{stem}.png"
-                img.save(img_path)
-                pairs.append({
-                    "id": stem,
-                    "paper_id": arxiv_id,
-                    "env": spec.env,
-                    "body": spec.body,
-                    "full_latex": spec.full_latex,
-                    "image": str(img_path.relative_to(ROOT)),
-                    "width": img.width,
-                    "height": img.height,
-                })
-            prog.advance(t)
-            if len(pairs) >= max_total:
-                break
-
     out = ROOT / "data" / "rendered" / "manifest.jsonl"
-    with out.open("w") as f:
-        for p in pairs:
-            f.write(json.dumps(p) + "\n")
+    # Resume: skip papers already represented in the manifest, keep prior entries.
+    seen_papers: set[str] = set()
+    pair_count = 0
+    if out.exists():
+        with out.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                seen_papers.add(d.get("paper_id", ""))
+                pair_count += 1
+        console.print(f"resuming: {pair_count} existing pairs across {len(seen_papers)} papers")
+
+    # Open in append mode so a Ctrl-C never loses already-rendered work.
+    manifest_fp = out.open("a")
+    try:
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), BarColumn(),
+                      TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
+                      console=console) as prog:
+            t = prog.add_task("papers", total=len(papers))
+            for p in papers:
+                arxiv_id = p.get_short_id().split("v")[0]
+                if arxiv_id in seen_papers:
+                    prog.advance(t); continue
+                paper_dir = download_source(p, RAW)
+                if paper_dir is None:
+                    prog.advance(t); continue
+                specs = extract_envs(arxiv_id, paper_dir, max_per_paper=max_per_paper)
+                for i, spec in enumerate(specs):
+                    if pair_count >= max_total:
+                        break
+                    try:
+                        img = render_latex(spec.full_latex, dpi=200)
+                    except RenderError:
+                        continue
+                    if img.width < 40 or img.height < 16:
+                        continue
+                    stem = f"{arxiv_id}_{i:03d}"
+                    img_path = RENDERED / f"{stem}.png"
+                    img.save(img_path)
+                    manifest_fp.write(json.dumps({
+                        "id": stem,
+                        "paper_id": arxiv_id,
+                        "env": spec.env,
+                        "body": spec.body,
+                        "full_latex": spec.full_latex,
+                        "image": str(img_path.relative_to(ROOT)),
+                        "width": img.width,
+                        "height": img.height,
+                    }) + "\n")
+                    manifest_fp.flush()
+                    pair_count += 1
+                prog.advance(t)
+                if pair_count >= max_total:
+                    break
+    finally:
+        manifest_fp.close()
+
     console.rule(f"[bold green]Done")
-    console.print(f"{len(pairs)} pairs written to {out}")
+    console.print(f"{pair_count} pairs in {out}")
 
 
 if __name__ == "__main__":

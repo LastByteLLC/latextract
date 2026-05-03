@@ -54,7 +54,7 @@ BATCH=2 GRAD_ACCUM=8 bash scripts/runpod_setup.sh
 
 ### What setup does (in order)
 
-1. `apt install tectonic poppler-utils` — TeX renderer + PDF rasterizer
+1. installs `poppler-utils` via apt and downloads the official `tectonic` static binary into `/usr/local/bin` (the Ubuntu repo on most RunPod images doesn't ship tectonic, and `apt-get update` can stall on a baked-in deadsnakes PPA — we skip both)
 2. `pip install -e .` then attempt `pip install flash-attn` (best-effort; SDPA fallback is fine if it fails to build)
 3. Warm tectonic's package cache with a trivial render so subsequent compiles are fast
 4. Run `scripts/build_dataset.py` to pull `$N_PAPERS` papers from arXiv math.DG and render `~$N_PAPERS × 18` isolated formulas
@@ -74,30 +74,15 @@ huggingface-cli login
 huggingface-cli upload <username>/textteller-mathdg-ft runs/textteller-mathdg/final
 ```
 
-## What it does
-
-1. installs tectonic + poppler + python deps
-2. tries to install flash-attn (falls back to PyTorch SDPA if it fails — both are fine)
-3. pulls 80 fresh math.DG papers, renders ~1000–1500 isolated formulas
-4. fine-tunes TexTeller for 800 steps with bf16, saves to `runs/textteller-mathdg/final`
-5. runs the eval harness against the same manifest with the fine-tuned model
-
 ## What we expect
 
-The current wrapped baseline (no training) hits **91% accept** on the local 44-formula set. Bottlenecks observed:
+The current wrapped baseline (no training) hits **86–91% accept** on the math.DG eval set, but only **61%** out-of-domain (math.AT/hep-th/cs.LG). Observed failure modes:
 
-- model wraps single expressions in spurious `\begin{array}` (rescued by retry today)
-- model emits `\hskip ...(1)` equation-number artifacts (stripped today)
-- multi-line `\begin{split}` is sometimes truncated
+- model wraps single expressions in spurious `\begin{array}` (today rescued by render-verify retry)
+- model emits `\hskip ...(1)` equation-number artifacts (today stripped post-decode)
+- multi-line `\begin{split}` is sometimes truncated at the token cap
 
-A fine-tune on properly-rendered display-math (no equation numbers, no array wraps) should suppress these failure modes at the source — pushing greedy-pass into the 90s and total-accept into the 95–98% range.
-
-## Knobs
-
-- `N_PAPERS=80` — train slice size; bump to 200 for a longer run
-- `MAX_STEPS=800` — ~25 min on A100; 1500 doubles training time
-- `BATCH=8` — fits in A100 80 GB; on a 24 GB card use `BATCH=2 GRAD_ACCUM=8`
-- `LR=5e-5` — conservative for fine-tuning a pretrained encoder-decoder
+A fine-tune on properly-rendered display-math (no equation numbers, no array wraps) should suppress these at the source — projected greedy-pass into the 90s and total-accept into the 95–98% range. Out-of-domain gains should be larger because the baseline is starting from a lower floor.
 
 ## After it finishes
 

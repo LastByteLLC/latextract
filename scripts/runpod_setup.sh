@@ -17,13 +17,33 @@ if [[ ! -d .git ]]; then
   git clone "$REPO_URL" .
 fi
 
-echo "==> installing tectonic (apt)"
-apt-get update -qq
-apt-get install -y -qq tectonic poppler-utils >/dev/null
+echo "==> upgrading pip"
+python -m pip install --upgrade pip
+
+echo "==> update torch to 2.5.1 (with CUDA 12.4) for best performance; skip if already up-to-date"
+pip install --upgrade --index-url https://download.pytorch.org/whl/cu124 \
+  torch==2.5.1 torchvision==0.20.1
+
+echo "==> installing tectonic (static binary) + poppler"
+# tectonic isn't in the default Ubuntu repos on most RunPod images; grab the
+# official static binary instead. Skip apt-get update so we don't stall on a
+# slow/unreachable PPA (e.g. deadsnakes) baked into the base image.
+apt-get install -y -qq poppler-utils >/dev/null
+if ! command -v tectonic >/dev/null 2>&1; then
+  TECTONIC_VERSION="${TECTONIC_VERSION:-0.15.0}"
+  TECTONIC_TARBALL="tectonic-${TECTONIC_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+  TECTONIC_URL="https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic@${TECTONIC_VERSION}/${TECTONIC_TARBALL}"
+  tmp="$(mktemp -d)"
+  curl --proto '=https' --tlsv1.2 -fsSL "$TECTONIC_URL" -o "$tmp/tectonic.tar.gz"
+  tar -xzf "$tmp/tectonic.tar.gz" -C "$tmp"
+  install -m 0755 "$tmp/tectonic" /usr/local/bin/tectonic
+  rm -rf "$tmp"
+fi
+tectonic --version
 
 echo "==> python deps"
 pip install --quiet -e .
-pip install --quiet flash-attn --no-build-isolation || echo "(flash-attn install best-effort; SDPA fallback is fine)"
+pip install flash-attn --no-build-isolation || echo "(flash-attn install best-effort; SDPA fallback is fine)"
 
 echo "==> warm tectonic cache"
 echo '\documentclass[preview]{standalone}\usepackage{amsmath}\begin{document}$x$\end{document}' \
