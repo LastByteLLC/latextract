@@ -3,7 +3,7 @@
 # Tested target: PyTorch 2.5+ CUDA image, A100 80GB or H100 80GB.
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/Tom-Barrasso/latextract.git}"
+REPO_URL="${REPO_URL:-https://github.com/LastByteLLC/latextract.git}"
 WORKDIR="${WORKDIR:-/workspace/latextract}"
 N_PAPERS="${N_PAPERS:-80}"
 MAX_STEPS="${MAX_STEPS:-800}"

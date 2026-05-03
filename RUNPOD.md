@@ -25,18 +25,53 @@ A100 80 GB is the right pick for this first pass.
 
 So a "first pass" is comfortably under $2.
 
-## Launch (one command)
+## Launch — clone from GitHub then run setup
+
+Prereqs on RunPod: a pod with a recent CUDA / PyTorch image (`pytorch/pytorch:2.5.0-cuda12.1-cudnn9-runtime` or newer) and an attached persistent volume mounted at `/workspace` so the model weights and dataset survive pod restart.
+
+### One-liner (zero-config, defaults baked in)
 
 ```bash
-# on the RunPod pod, after attaching a volume:
-curl -fsSL https://raw.githubusercontent.com/Tom-Barrasso/latextract/main/scripts/runpod_setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/LastByteLLC/latextract/main/scripts/runpod_setup.sh | bash
 ```
 
-…or clone first and edit env vars:
+### Or: clone first, then customize
 
 ```bash
-git clone https://github.com/Tom-Barrasso/latextract.git && cd latextract
+cd /workspace
+git clone https://github.com/LastByteLLC/latextract.git
+cd latextract
+
+# defaults: 80 papers from math.DG, 800 steps, batch 8, lr 5e-5
 N_PAPERS=80 MAX_STEPS=800 BATCH=8 LR=5e-5 bash scripts/runpod_setup.sh
+
+# bigger run, more domains, longer training:
+N_PAPERS=200 MAX_STEPS=1500 BATCH=16 LR=3e-5 bash scripts/runpod_setup.sh
+
+# 24 GB card (RTX 4090): smaller batch + more accumulation
+BATCH=2 GRAD_ACCUM=8 bash scripts/runpod_setup.sh
+```
+
+### What setup does (in order)
+
+1. `apt install tectonic poppler-utils` — TeX renderer + PDF rasterizer
+2. `pip install -e .` then attempt `pip install flash-attn` (best-effort; SDPA fallback is fine if it fails to build)
+3. Warm tectonic's package cache with a trivial render so subsequent compiles are fast
+4. Run `scripts/build_dataset.py` to pull `$N_PAPERS` papers from arXiv math.DG and render `~$N_PAPERS × 18` isolated formulas
+5. Run `scripts/train.py` with bf16 + gradient checkpointing (set by the `MAX_STEPS / BATCH / GRAD_ACCUM / LR` env vars) and save to `runs/textteller-mathdg/final`
+6. Re-run `scripts/run_eval.py` against the same manifest with the fine-tuned weights → `data/eval/results_finetuned.jsonl`
+
+### Pulling the fine-tuned weights back
+
+After training, the final checkpoint is at `runs/textteller-mathdg/final/`. Two options:
+
+```bash
+# zip and download from RunPod's web UI (volume browser)
+tar -czf /workspace/textteller-ft.tar.gz -C /workspace/latextract/runs textteller-mathdg
+
+# or push to a Hugging Face hub repo
+huggingface-cli login
+huggingface-cli upload <username>/textteller-mathdg-ft runs/textteller-mathdg/final
 ```
 
 ## What it does
