@@ -43,10 +43,16 @@ let ocr: LatexOCR | null = null;
 let currentVariant: Variant | null = null;
 let currentBackend: Backend | null = null;
 
-function setStatus(msg: string, frac = 0): void {
+// frac = null → indeterminate (animated bar). Use this when we don't know how
+// long the step takes, e.g. autoregressive decoding before any tokens land.
+function setStatus(msg: string, frac: number | null = 0): void {
   statusEl.hidden = false;
   statusText.textContent = msg;
-  progressEl.value = Math.round(frac * 100);
+  if (frac === null) {
+    progressEl.removeAttribute("value");
+  } else {
+    progressEl.value = Math.round(frac * 100);
+  }
 }
 
 function hideStatus(): void {
@@ -79,10 +85,13 @@ async function processFile(file: File): Promise<void> {
 
   const bitmap = await createImageBitmap(file);
   const inst = await ensureOcr();
-  setStatus("decoding…", 0.5);
+  setStatus("decoding…", null);
 
   const t0 = performance.now();
-  const out = await inst.extract(bitmap, { useGrammar: grammarChk.checked });
+  const out = await inst.extract(bitmap, {
+    useGrammar: grammarChk.checked,
+    onToken: (n, max) => setStatus(`decoding… ${n}/${max} tokens`, n / max),
+  });
   const dt = performance.now() - t0;
 
   latexOutEl.textContent = out.latex;

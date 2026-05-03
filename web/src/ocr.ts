@@ -7,6 +7,7 @@
 
 import {
   AutoTokenizer,
+  BaseStreamer,
   VisionEncoderDecoderModel,
   env,
   type PreTrainedTokenizer,
@@ -33,6 +34,7 @@ export interface InitOptions {
 export interface ExtractOptions {
   useGrammar: boolean;
   maxNewTokens?: number;
+  onToken?: (count: number, maxTokens: number) => void;
 }
 
 export interface ExtractResult {
@@ -94,20 +96,50 @@ export class LatexOCR {
     if (env.backends?.onnx?.wasm) {
       env.backends.onnx.wasm.numThreads = navigator.hardwareConcurrency ?? 4;
     }
+    // ORT logs "Some nodes were not assigned to the preferred execution
+    // providers" at warning severity for every session. It's expected (a few
+    // shape ops always fall back to CPU), so silence anything below error.
+    if (env.backends?.onnx) {
+      env.backends.onnx.logLevel = "error";
+    }
 
-    onProgress?.("loading tokenizer", 0.1);
+    onProgress?.("loading tokenizer", 0.05);
     this.tokenizer = await AutoTokenizer.from_pretrained(variant, { local_files_only: true });
 
-    onProgress?.(`loading ${variant} model (${backend})`, 0.3);
+    // Map transformers.js loader events into our 0.1–0.8 progress band so the
+    // bar moves continuously through the ~256 MB download + WASM compile
+    // instead of sitting silently at 30% for 10–30 seconds.
+    type LoaderProgress =
+      | { status: "initiate" | "download" | "done"; file: string }
+      | { status: "progress"; file: string; progress: number; loaded: number; total: number }
+      | { status: "ready" };
+    const fileProgress = new Map<string, number>();
+    const loaderCallback = (info: LoaderProgress): void => {
+      if (info.status === "progress") {
+        fileProgress.set(info.file, info.progress / 100);
+      } else if (info.status === "done") {
+        fileProgress.set(info.file, 1);
+      } else if (info.status === "initiate") {
+        fileProgress.set(info.file, 0);
+      } else {
+        return;
+      }
+      let avg = 0;
+      for (const v of fileProgress.values()) avg += v;
+      avg = fileProgress.size ? avg / fileProgress.size : 0;
+      const file = "file" in info ? info.file : "";
+      onProgress?.(`loading ${variant} model (${backend}) — ${file}`, 0.1 + avg * 0.7);
+    };
     // dtype tells transformers.js which ONNX file to pick within onnx/:
     // q4 → *_q4.onnx (MatMulNBits 4-bit weight-only).
     this.model = await VisionEncoderDecoderModel.from_pretrained(variant, {
       device: backend,
       dtype: "q4",
       local_files_only: true,
+      progress_callback: loaderCallback as unknown as undefined,
     });
 
-    onProgress?.("warming grammar", 0.85);
+    onProgress?.("warming grammar", 0.9);
     this.grammarReady = await warmGrammar();
     this.banlistTokens = buildBanlistSingleTokens(this.tokenizer);
 
@@ -179,8 +211,9 @@ export class LatexOCR {
       [1, this.numChannels, target, target],
     );
 
+    const maxNewTokens = opts.maxNewTokens ?? 256;
     const generationConfig: Record<string, unknown> = {
-      max_new_tokens: opts.maxNewTokens ?? 256,
+      max_new_tokens: maxNewTokens,
       num_beams: 1,
       do_sample: false,
       no_repeat_ngram_size: 4,
@@ -198,6 +231,18 @@ export class LatexOCR {
       grammarApplied = this.grammarReady; // false → fell back to heuristic
     }
 
+    // Streamer runs on every generation step (greedy → one token per step).
+    // We use it to drive the per-token UI updates so the progress bar keeps
+    // moving instead of looking frozen at 50% for the full decode.
+    let tokenCount = 0;
+    const streamer = new (class extends BaseStreamer {
+      put(_value: bigint[][]): void {
+        tokenCount += 1;
+        opts.onToken?.(tokenCount, maxNewTokens);
+      }
+      end(): void {}
+    })();
+
     // generate() in transformers.js v3 takes inputs + generation_config + logits_processor.
     // Returns a Tensor of shape [batch, seq_len] (int64) by default; if
     // generation_config.return_dict_in_generate is set it returns { sequences, ... }.
@@ -212,6 +257,7 @@ export class LatexOCR {
       inputs: pixel_values,
       generation_config: generationConfig,
       logits_processor: logitsProcessors,
+      streamer,
     })) as GenTensor | { sequences: GenTensor };
 
     const seqTensor: GenTensor =
