@@ -66,6 +66,9 @@ export class LatexOCR {
   private model!: VisionEncoderDecoderModel;
   private banlistTokens!: Set<number>;
   private imageSize = 448;
+  // TexTeller's ViT encoder is single-channel (grayscale). Read from config
+  // at load time so we don't break on retrained variants that might be RGB.
+  private numChannels = 1;
   private grammarReady = false;
 
   static async create(opts: InitOptions): Promise<LatexOCR> {
@@ -108,16 +111,23 @@ export class LatexOCR {
     this.grammarReady = await warmGrammar();
     this.banlistTokens = buildBanlistSingleTokens(this.tokenizer);
 
-    // Pull image_size from config when present.
-    const cfg = (this.model as unknown as { config?: { encoder?: { image_size?: number | number[] } } }).config;
+    // Pull image_size + num_channels from config when present.
+    const cfg = (this.model as unknown as {
+      config?: { encoder?: { image_size?: number | number[]; num_channels?: number } };
+    }).config;
     const sz = cfg?.encoder?.image_size;
     if (typeof sz === "number") this.imageSize = sz;
     else if (Array.isArray(sz) && sz.length) this.imageSize = sz[0];
+    const nc = cfg?.encoder?.num_channels;
+    if (typeof nc === "number" && (nc === 1 || nc === 3)) this.numChannels = nc;
 
     onProgress?.("ready", 1.0);
   }
 
-  /** Letterbox-resize to a square canvas, normalize with ImageNet stats, return CHW Float32. */
+  /** Letterbox-resize to a square canvas, normalize, return CHW Float32.
+   *  For num_channels=1: convert to ITU-R 601-2 luma, normalize (x-0.5)/0.5.
+   *  For num_channels=3: ImageNet normalize per channel. Mirrors
+   *  src/latextract/model/inference.py:_preprocess_vit. */
   private async preprocess(imageBitmap: ImageBitmap | HTMLImageElement): Promise<Float32Array> {
     const target = this.imageSize;
     const canvas = new OffscreenCanvas(target, target);
@@ -133,10 +143,19 @@ export class LatexOCR {
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(imageBitmap as CanvasImageSource, (target - nw) >> 1, (target - nh) >> 1, nw, nh);
     const { data } = ctx.getImageData(0, 0, target, target);
-
-    // RGBA → CHW with ImageNet normalization
-    const out = new Float32Array(3 * target * target);
     const planeSize = target * target;
+
+    if (this.numChannels === 1) {
+      const out = new Float32Array(planeSize);
+      for (let i = 0; i < planeSize; i++) {
+        // ITU-R 601-2 luma — same as PIL's Image.convert("L")
+        const lum = (0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]) / 255;
+        out[i] = (lum - 0.5) / 0.5;
+      }
+      return out;
+    }
+
+    const out = new Float32Array(3 * planeSize);
     for (let i = 0; i < planeSize; i++) {
       const r = data[i * 4] / 255;
       const g = data[i * 4 + 1] / 255;
@@ -153,10 +172,12 @@ export class LatexOCR {
     const pixelData = await this.preprocess(image);
     const target = this.imageSize;
 
-    // Build a Tensor of shape [1, 3, H, W] — RawImage-like pipelines do this for us
-    // but we already have the right shape, so go straight to the model API.
     const { Tensor } = await import("@huggingface/transformers");
-    const pixel_values = new Tensor("float32", pixelData, [1, 3, target, target]);
+    const pixel_values = new Tensor(
+      "float32",
+      pixelData,
+      [1, this.numChannels, target, target],
+    );
 
     const generationConfig: Record<string, unknown> = {
       max_new_tokens: opts.maxNewTokens ?? 256,
