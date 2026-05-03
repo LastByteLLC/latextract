@@ -227,3 +227,5 @@ __marimo__/
 .DS_Store
 /data/eval
 /runs/smoke
+*.safetensors
+/.hf_cache

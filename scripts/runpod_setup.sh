@@ -20,9 +20,26 @@ fi
 echo "==> upgrading pip"
 python -m pip install --upgrade pip
 
-echo "==> update torch to 2.5.1 (with CUDA 12.4) for best performance; skip if already up-to-date"
-pip install --upgrade --index-url https://download.pytorch.org/whl/cu124 \
-  torch==2.5.1 torchvision==0.20.1
+echo "==> ensure torch matches the host NVIDIA driver"
+# RunPod base images ship torch+cu121. Upgrading to cu124 needs driver >= 550 or
+# cuDNN init dies on the first conv with CUDNN_STATUS_NOT_INITIALIZED. Pick the
+# wheel index from the actual driver, and only reinstall when the running torch
+# disagrees with what the driver supports.
+DRIVER_MAJOR="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1 || echo 0)"
+if [[ "${DRIVER_MAJOR:-0}" -ge 550 ]]; then
+  TORCH_INDEX="https://download.pytorch.org/whl/cu124"
+  WANTED_CUDA="12.4"
+else
+  TORCH_INDEX="https://download.pytorch.org/whl/cu121"
+  WANTED_CUDA="12.1"
+fi
+CURRENT_CUDA="$(python -c 'import torch,sys; sys.stdout.write(torch.version.cuda or "")' 2>/dev/null || echo "")"
+if [[ "$CURRENT_CUDA" != "$WANTED_CUDA" ]]; then
+  echo "    driver=$DRIVER_MAJOR -> reinstalling torch for cuda $WANTED_CUDA (was: ${CURRENT_CUDA:-none})"
+  pip install --upgrade --index-url "$TORCH_INDEX" torch==2.5.1 torchvision==0.20.1
+else
+  echo "    driver=$DRIVER_MAJOR matches torch+cu$CURRENT_CUDA, no reinstall"
+fi
 
 echo "==> installing tectonic (static binary) + poppler"
 # tectonic isn't in the default Ubuntu repos on most RunPod images; grab the
@@ -44,6 +61,13 @@ tectonic --version
 echo "==> python deps"
 pip install --quiet -e .
 pip install flash-attn --no-build-isolation || echo "(flash-attn install best-effort; SDPA fallback is fine)"
+
+# torch 2.5.1 pins nvidia-cudnn-cu12==9.1.0.70, which fails to initialize
+# (CUDNN_STATUS_NOT_INITIALIZED on the first conv) on Ada cards like L40S.
+# Bump to a newer cuDNN; the pin warning is cosmetic — torch dlopens the .so
+# from site-packages at runtime regardless of version.
+echo "==> upgrade cuDNN past torch's broken pin (fixes L40S init)"
+pip install --quiet --upgrade "nvidia-cudnn-cu12>=9.5"
 
 echo "==> warm tectonic cache"
 echo '\documentclass[preview]{standalone}\usepackage{amsmath}\begin{document}$x$\end{document}' \
