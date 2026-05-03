@@ -26,15 +26,27 @@ display_math: BSLASH "[" expr BSLASH "]"
             | "\\begin{multline}" gather_body "\\end{multline}"
 
 align_body: aligned_expr (LINEBREAK aligned_expr)*
-aligned_expr: expr ("&" expr)*
+aligned_expr: aligned_part ("&" aligned_part)*
 gather_body: expr (LINEBREAK expr)*
 
 // Top-level expression: a sequence of atoms with optional binary operators
 // glued in. We do NOT model precedence here — the model emits visually-correct
-// strings; precedence is the renderer's job.
-expr: atom (binop? atom)*
+// strings; precedence is the renderer's job. Optional unary +/- prefix
+// (allowed at the start AND after any binop, so `... = -\mu` parses), and
+// optional trailing punctuation (the comma/period that ends most arXiv
+// display-math formulas).
+expr: unary_prefix? atom (binop unary_prefix? atom | atom)* trailing_punct?
+unary_prefix: "+" | "-"
+trailing_punct: "," | "." | ";"
 
-atom: simple_atom (script*)?
+// Inside an `aligned` env, fragments often start with a binop because the `&`
+// is placed at the alignment column (e.g. `LHS &= RHS`). So an aligned part
+// is an optional leading binop followed by a regular expr.
+aligned_part: binop? expr
+
+// Atom may carry trailing scripts (subscript/superscript) and optional
+// factorial postfix (n!).
+atom: simple_atom (script | "!")*
 
 simple_atom: identifier
            | number
@@ -51,6 +63,7 @@ simple_atom: identifier
            | spacing
            | misc_command
            | bar_delim
+           | single_bar
            | prime
 
 script: "_" script_arg
@@ -99,17 +112,36 @@ fraction: ("\\frac" | "\\dfrac" | "\\tfrac" | "\\binom") "{" expr "}" "{" expr "
 
 sqrt: "\\sqrt" ("[" expr "]")? "{" expr "}"
 
-accent: ("\\bar" | "\\hat" | "\\tilde" | "\\vec" | "\\dot" | "\\ddot"
-       | "\\widehat" | "\\widetilde" | "\\overline" | "\\underline"
-       | "\\overbrace" | "\\underbrace") "{" expr "}"
+// Accents allow either {arg} form OR a single following command (\bar\partial,
+// \hat\Omega) — arXiv math is full of the second form.
+accent: accent_cmd "{" expr "}"
+      | accent_cmd accent_short_arg
+accent_cmd: "\\bar" | "\\hat" | "\\tilde" | "\\vec" | "\\dot" | "\\ddot"
+          | "\\widehat" | "\\widetilde" | "\\overline" | "\\underline"
+          | "\\overbrace" | "\\underbrace" | "\\check" | "\\acute" | "\\grave"
+accent_short_arg: greek | function | bigop | misc_command | LETTER
 
-math_font: ("\\mathbb" | "\\mathcal" | "\\mathfrak" | "\\mathrm"
-          | "\\mathbf" | "\\mathit" | "\\mathsf" | "\\mathtt"
-          | "\\boldsymbol" | "\\bm" | "\\operatorname" | "\\text") "{" expr "}"
+// Math fonts: same — {arg} or a single following identifier (\mathrm H, \mathcal R).
+math_font: font_cmd "{" expr "}"
+         | font_cmd LETTER
+font_cmd: "\\mathbb" | "\\mathcal" | "\\mathfrak" | "\\mathrm"
+        | "\\mathbf" | "\\mathit" | "\\mathsf" | "\\mathtt"
+        | "\\boldsymbol" | "\\bm" | "\\operatorname" | "\\text" | "\\mbox"
+        // legacy forms — used inside groups: {\rm Hom}, {\bf x}
+        | "\\rm" | "\\bf" | "\\it" | "\\sf" | "\\tt" | "\\sl" | "\\sc"
 
+// Sized delimiter pairs: \big( … \big), \Big[ … \Big], etc. Both the bare
+// form (\big( … \big)) and the {-wrapped form (\big{(} … \big{)}) appear.
 bracket_pair: "\\left" delim expr "\\right" delim
+            | size_cmd delim expr size_cmd delim
+            | size_cmd "{" delim "}" expr size_cmd "{" delim "}"
+size_cmd: "\\big" | "\\Big" | "\\bigg" | "\\Bigg"
+        | "\\bigl" | "\\Bigl" | "\\biggl" | "\\Biggl"
+        | "\\bigr" | "\\Bigr" | "\\biggr" | "\\Biggr"
 delim: "(" | ")" | "[" | "]" | "\\{" | "\\}" | "|" | "\\|"
      | "\\langle" | "\\rangle" | "."
+     | "\\lfloor" | "\\rfloor" | "\\lceil" | "\\rceil"
+     | "\\vert" | "\\Vert"
 
 // Bare parentheses, brackets, and braces (no \left/\right scaling).
 bare_paren: "(" expr ")"
@@ -117,34 +149,47 @@ bare_paren: "(" expr ")"
           | "\\{" expr "\\}"
           | "\\langle" expr "\\rangle"
 
-// |x|, \vert x \vert, \Vert x \Vert, \|x\|: vertical-bar absolute-value style
+// Two roles for vertical bars:
+//   bar_delim — paired absolute-value style  |x|, \vert x \vert
+//   single_bar — a *single* bar that can take subscripts/superscripts
+//                (e.g. f|_X, \vert_\Gamma^*, u|_{I_1}^{-1}). This is the
+//                "restriction to" notation common in math.DG / topology.
 bar_delim: "|" expr "|"
          | "\\vert" expr "\\vert"
          | "\\Vert" expr "\\Vert"
          | "\\|" expr "\\|"
+
+single_bar: "|" | "\\vert" | "\\Vert" | "\\|"
 
 prime: "'"
 
 spacing: "\\," | "\\;" | "\\:" | "\\!" | "\\quad" | "\\qquad"
        | "\\ " | "\\\\" | "~"
 
-misc_command: "\\ldots" | "\\cdots" | "\\vdots" | "\\ddots"
+misc_command: "\\ldots" | "\\cdots" | "\\vdots" | "\\ddots" | "\\dots"
             | "\\infty" | "\\partial" | "\\nabla"
             | "\\emptyset" | "\\varnothing" | "\\forall" | "\\exists" | "\\nexists"
             | "\\circ" | "\\bullet" | "\\star" | "\\ast"
             | "\\prime" | "\\dagger" | "\\ddagger"
             | "\\backslash" | "\\hbar" | "\\imath" | "\\jmath" | "\\aleph"
             | "\\Re" | "\\Im" | "\\wp" | "\\angle" | "\\triangle"
-            | "\\nolimits" | "\\limits"
+            | "\\nolimits" | "\\limits" | "\\top" | "\\bot" | "\\perp"
+            | "\\flat" | "\\sharp" | "\\natural"
+            | xarrow
+
+// \xrightarrow{...} and friends — arrows with a label on top.
+xarrow: ("\\xrightarrow" | "\\xleftarrow" | "\\xRightarrow" | "\\xLeftarrow"
+       | "\\xmapsto" | "\\xhookrightarrow" | "\\overset" | "\\underset"
+       | "\\stackrel") ("[" expr "]")? "{" expr "}"
 
 // --- binary operators / relations --------------------------------------
 
 binop: REL_OP | ARITH_OP | SET_OP | LOGIC_OP | ARROW_OP | NAMED_BINOP
 
-REL_OP: "=" | "<" | ">" | "\\leq" | "\\geq" | "\\le" | "\\ge"
+REL_OP: "=" | "<" | ">" | ":=" | "=:" | "\\leq" | "\\geq" | "\\le" | "\\ge"
       | "\\neq" | "\\ne" | "\\equiv" | "\\sim" | "\\simeq"
       | "\\approx" | "\\cong" | "\\propto" | "\\preceq" | "\\succeq"
-      | "\\models" | "\\vdash" | "\\dashv"
+      | "\\models" | "\\vdash" | "\\dashv" | "\\ll" | "\\gg" | "\\asymp"
 
 ARITH_OP: "+" | "-" | "*" | "/" | "\\pm" | "\\mp" | "\\cdot" | "\\times" | "\\div"
         | "\\oplus" | "\\otimes" | "\\ominus" | "\\oslash" | "\\odot"
@@ -161,6 +206,7 @@ ARROW_OP: "\\to" | "\\rightarrow" | "\\leftarrow" | "\\leftrightarrow"
         | "\\mapsto" | "\\hookrightarrow" | "\\twoheadrightarrow"
         | "\\longrightarrow" | "\\longleftarrow" | "\\longmapsto"
         | "\\uparrow" | "\\downarrow" | "\\updownarrow"
+        | "\\Longrightarrow" | "\\Longleftarrow" | "\\Longleftrightarrow"
 
 NAMED_BINOP: "," | ";" | ":" | "."
 
