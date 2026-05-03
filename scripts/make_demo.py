@@ -78,8 +78,8 @@ def _row(input_img: Image.Image, predicted_render: Image.Image | None, label: st
     return canvas
 
 
-def main():
-    results = [json.loads(l) for l in (ROOT / "data/eval/results.jsonl").read_text().splitlines() if l.strip()]
+def main(results_path: str = "data/eval/results_optimized.jsonl"):
+    results = [json.loads(l) for l in (ROOT / results_path).read_text().splitlines() if l.strip()]
 
     greedy_pass = [r for r in results if r["greedy_ssim"] >= 0.95][:3]
     rescued = [r for r in results if r["greedy_ssim"] < 0.95 and r["accepted"]][:4]
@@ -204,4 +204,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import typer
+    typer.run(main)

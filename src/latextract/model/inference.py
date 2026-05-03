@@ -68,26 +68,46 @@ def _preprocess_vit(image: Image.Image, target_size: int, num_channels: int = 3)
 
 
 class LatexOCR:
-    def __init__(self, model_id: str = DEFAULT_MODEL, device: str | None = None):
+    def __init__(self, model_id: str = DEFAULT_MODEL, device: str | None = None,
+                 use_grammar: bool = True):
         self.model_id = model_id
         self.device = device or ("mps" if torch.backends.mps.is_available() else
                                   ("cuda" if torch.cuda.is_available() else "cpu"))
-        log.info("loading %s on %s", model_id, self.device)
+        log.info("loading %s on %s (grammar=%s)", model_id, self.device, use_grammar)
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         self.model = VisionEncoderDecoderModel.from_pretrained(model_id).to(self.device).eval()
         enc_cfg = self.model.config.encoder
         sz = getattr(enc_cfg, "image_size", 448)
         self.image_size = int(sz[0] if isinstance(sz, (list, tuple)) else sz)
         self.num_channels = int(getattr(enc_cfg, "num_channels", 3))
+        self.use_grammar = use_grammar
+        self.bad_words_ids: list[list[int]] | None = None
+        if use_grammar:
+            from latextract.grammar import build_banned_token_ids
+            self.bad_words_ids = build_banned_token_ids(self.tokenizer)
+
+    def _encode(self, image: Image.Image) -> torch.Tensor:
+        """Run the encoder once and return the encoder hidden states (cacheable)."""
+        pixel_values = _preprocess_vit(image, self.image_size, self.num_channels).to(self.device)
+        with torch.inference_mode():
+            enc_out = self.model.encoder(pixel_values=pixel_values, return_dict=True)
+        return enc_out.last_hidden_state
 
     @torch.inference_mode()
-    def predict(self, image: Image.Image, max_new_tokens: int = 512, num_beams: int = 1) -> Prediction:
-        pixel_values = _preprocess_vit(image, self.image_size, self.num_channels).to(self.device)
+    def predict(self, image: Image.Image, max_new_tokens: int = 256, num_beams: int = 1,
+                encoder_hidden_states: torch.Tensor | None = None) -> Prediction:
+        if encoder_hidden_states is None:
+            encoder_hidden_states = self._encode(image)
+        from transformers.modeling_outputs import BaseModelOutput
+        enc_kwargs = dict(encoder_outputs=BaseModelOutput(last_hidden_state=encoder_hidden_states))
         out = self.model.generate(
-            pixel_values,
+            **enc_kwargs,
             max_new_tokens=max_new_tokens,
             num_beams=num_beams,
             do_sample=False,
+            no_repeat_ngram_size=4,
+            repetition_penalty=1.15,
+            bad_words_ids=self.bad_words_ids,
             return_dict_in_generate=True,
             output_scores=True,
         )
@@ -105,17 +125,23 @@ class LatexOCR:
         return Prediction(latex=latex.strip(), tokens=seq.tolist(), avg_logprob=avg)
 
     @torch.inference_mode()
-    def predict_beams(self, image: Image.Image, max_new_tokens: int = 512,
-                      num_beams: int = 4, num_return_sequences: int = 4) -> list[Prediction]:
+    def predict_beams(self, image: Image.Image, max_new_tokens: int = 256,
+                      num_beams: int = 3, num_return_sequences: int = 3,
+                      encoder_hidden_states: torch.Tensor | None = None) -> list[Prediction]:
         """Return up to N beam-diverse predictions sorted by sequence-score (best first)."""
-        pixel_values = _preprocess_vit(image, self.image_size, self.num_channels).to(self.device)
+        if encoder_hidden_states is None:
+            encoder_hidden_states = self._encode(image)
+        from transformers.modeling_outputs import BaseModelOutput
         n_ret = min(num_return_sequences, num_beams)
         out = self.model.generate(
-            pixel_values,
+            encoder_outputs=BaseModelOutput(last_hidden_state=encoder_hidden_states),
             max_new_tokens=max_new_tokens,
             num_beams=num_beams,
             num_return_sequences=n_ret,
             do_sample=False,
+            no_repeat_ngram_size=4,
+            repetition_penalty=1.15,
+            bad_words_ids=self.bad_words_ids,
             return_dict_in_generate=True,
             output_scores=True,
         )

@@ -81,11 +81,15 @@ def extract_with_verify(
     ocr: LatexOCR, image: Image.Image,
     threshold: float = 0.95, max_attempts: int = 3,
 ) -> ExtractResult:
-    """Greedy decode + render-verify; if SSIM < threshold, try beam-diverse alternates."""
+    """Greedy decode + render-verify; if SSIM < threshold, try beam-diverse alternates.
+    Encoder is run once; decoder retries reuse the cached encoder hidden states."""
     candidates: list[Candidate] = []
 
+    # Encode once, share across attempts
+    enc_h = ocr._encode(image)
+
     # Attempt 1: greedy
-    pred = ocr.predict(image, num_beams=1)
+    pred = ocr.predict(image, num_beams=1, encoder_hidden_states=enc_h)
     cand = _verify_one(pred.latex, image)
     cand.avg_logprob = pred.avg_logprob
     candidates.append(cand)
@@ -94,20 +98,23 @@ def extract_with_verify(
         return ExtractResult(latex=cand.latex, ssim=cand.ssim, avg_logprob=cand.avg_logprob,
                              rendered=cand.rendered, attempts=1, candidates=candidates, accepted=True)
 
-    # Attempt 2..N: beam search returns multiple sequences; pick highest-SSIM
-    if max_attempts >= 2:
-        pixel_values = ocr.model.config  # placeholder — rerun via predict_beam
-        beams = ocr.predict_beams(image, num_beams=4, num_return_sequences=4) if hasattr(ocr, "predict_beams") else []
+    # Skip retry if greedy was catastrophically bad (likely won't be rescued)
+    if max_attempts >= 2 and (cand.ssim > 0.3 or cand.error is not None):
+        beams = ocr.predict_beams(image, num_beams=3, num_return_sequences=3, encoder_hidden_states=enc_h)
         for bp in beams:
+            # Skip duplicates of the greedy candidate
+            if any(c.latex == bp.latex for c in candidates):
+                continue
             c = _verify_one(bp.latex, image)
             c.avg_logprob = bp.avg_logprob
             candidates.append(c)
+            if c.ssim >= threshold:
+                break  # found a winner, no need to evaluate the rest
 
-    # Pick best
     best = max(candidates, key=lambda c: c.ssim)
     accepted = best.ssim >= threshold and best.error is None
     return ExtractResult(
-        latex=best.latex if accepted else best.latex,  # still return best-effort latex
+        latex=best.latex,
         ssim=best.ssim,
         avg_logprob=best.avg_logprob,
         rendered=best.rendered,
