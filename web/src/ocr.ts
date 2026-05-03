@@ -77,24 +77,28 @@ export class LatexOCR {
   private async init(opts: InitOptions): Promise<void> {
     const { variant, backend, modelsBaseUrl, onProgress } = opts;
 
-    // Point transformers.js at our local model directory layout.
-    // The lib resolves model files relative to env.localModelPath when
-    // env.allowRemoteModels=false, or fetches from HF Hub otherwise.
-    const baseUrl = modelsBaseUrl ?? `${import.meta.env.BASE_URL}models/${variant}/`;
+    // Point transformers.js at our local model directory layout. The lib
+    // string-concatenates `localModelPath + model_id + "/" + filename` in the
+    // browser, so localModelPath must be the *parent* of the variant dir and
+    // the variant name is passed as the model_id.
+    //   localModelPath = "/latextract/models/"
+    //   model_id       = "int4"
+    //   → fetches "/latextract/models/int4/tokenizer.json"
+    const modelsRoot = modelsBaseUrl ?? `${import.meta.env.BASE_URL}models/`;
     env.allowRemoteModels = false;
     env.allowLocalModels = true;
-    env.localModelPath = baseUrl;
+    env.localModelPath = modelsRoot;
     if (env.backends?.onnx?.wasm) {
       env.backends.onnx.wasm.numThreads = navigator.hardwareConcurrency ?? 4;
     }
 
     onProgress?.("loading tokenizer", 0.1);
-    this.tokenizer = await AutoTokenizer.from_pretrained(".", { local_files_only: true });
+    this.tokenizer = await AutoTokenizer.from_pretrained(variant, { local_files_only: true });
 
     onProgress?.(`loading ${variant} model (${backend})`, 0.3);
     // dtype tells transformers.js which ONNX file to pick within onnx/:
     // q4 → *_q4.onnx (MatMulNBits 4-bit weight-only).
-    this.model = await VisionEncoderDecoderModel.from_pretrained(".", {
+    this.model = await VisionEncoderDecoderModel.from_pretrained(variant, {
       device: backend,
       dtype: "q4",
       local_files_only: true,
