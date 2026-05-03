@@ -16,9 +16,18 @@ import { ExpirationPlugin } from "workbox-expiration";
 
 declare const self: ServiceWorkerGlobalScope & { __WB_MANIFEST: { url: string }[] };
 
-const APP_VERSION = "v1";
+// Bumped from v1 → v2 along with the `skipWaiting` install handler below: the
+// v1 SW has no skipWaiting, so users who installed it get stuck on the old
+// precached bundle until every tab is closed. v2's install fires skipWaiting
+// the moment the browser fetches the new SW bytes, so the fix actually rolls
+// out on the next page load.
+const APP_VERSION = "v2";
 const MODEL_CACHE = `latextract-models-${APP_VERSION}`;
 const ORT_CACHE = `latextract-ort-wasm-${APP_VERSION}`;
+
+self.addEventListener("install", () => {
+  void self.skipWaiting();
+});
 
 precacheAndRoute(self.__WB_MANIFEST ?? []);
 

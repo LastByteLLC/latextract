@@ -26,6 +26,19 @@ const commitEl = $<HTMLElement>("commit");
 
 commitEl.textContent = `build ${__COMMIT__ ?? "dev"}`;
 
+// When the SW activates a new version (it calls skipWaiting + clients.claim),
+// reload once so the page picks up the new bundle. Without this, users keep
+// running the old JS until they manually refresh — which is how stale
+// precached bundles linger after a deploy.
+if ("serviceWorker" in navigator) {
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloaded) return;
+    reloaded = true;
+    window.location.reload();
+  });
+}
+
 let ocr: LatexOCR | null = null;
 let currentVariant: Variant | null = null;
 let currentBackend: Backend | null = null;
