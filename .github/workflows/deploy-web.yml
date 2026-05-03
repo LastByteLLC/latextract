@@ -1,0 +1,111 @@
+name: Deploy web demo
+
+# On push to main, build the Vite app and deploy to GitHub Pages.
+# Models are pulled from the most recent successful run of `Quantize models`
+# (workflow artifact). If no artifact exists, the demo deploys without bundled
+# models and shows a friendly "models not yet quantized" message at runtime.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "src/latextract/grammar/**"
+      - ".github/workflows/deploy-web.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # Note: we intentionally do NOT run lark-js here. Our grammar uses
+      # Earley constructs (rules `function` and `misc_command` overlap on
+      # `\Re`, `\Im`, etc.) and lark-js only emits LALR parsers, producing 20+
+      # reduce/reduce collisions and no output. The browser logits processor
+      # falls back to a heuristic prefix check (brace balance + banlist) when
+      # parser.js is missing — see web/src/grammar/incremental.ts.
+      # TODO: port the grammar to nearley.js or run the Python Lark via Pyodide
+      # to enable full CFG enforcement in the browser.
+
+      - name: Install web deps
+        working-directory: web
+        run: npm ci || npm install
+
+      - name: Download most recent quantized models
+        id: download-models
+        uses: dawidd6/action-download-artifact@v21
+        with:
+          workflow: quantize-models.yml
+          workflow_conclusion: success
+          name_is_regexp: true
+          name: texteller-quantized-.*
+          path: web/public/models
+          if_no_artifact_found: warn
+        continue-on-error: true
+
+      - name: Flatten models directory
+        # action-download-artifact nests under a folder named after the artifact.
+        # Move contents up one level so the path is web/public/models/{int4,int8}/...
+        run: |
+          cd web/public/models 2>/dev/null || exit 0
+          shopt -s nullglob
+          for d in texteller-quantized-*/; do
+            cp -r "$d"* . 2>/dev/null || true
+            rm -rf "$d"
+          done
+          ls -la . || true
+
+      - name: Build
+        working-directory: web
+        env:
+          PAGES_BASE: /${{ github.event.repository.name }}/
+          GITHUB_SHA: ${{ github.sha }}
+        run: npm run build
+
+      - name: Report bundle size
+        run: |
+          {
+            echo "## Bundle"
+            echo "| path | size |"
+            echo "|---|---|"
+            du -sh web/dist 2>/dev/null | awk '{print "| dist | "$1" |"}'
+            du -sh web/public/models/*/ 2>/dev/null | awk '{print "| "$2" | "$1" |"}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

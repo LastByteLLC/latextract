@@ -1,0 +1,6 @@
+node_modules
+dist
+public/models
+src/grammar/parser.js
+*.tsbuildinfo
+.vite

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>latextract — image → LaTeX in the browser</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>latextract</h1>
+      <p class="tagline">
+        image → grammar-validated LaTeX, running entirely in your browser.
+      </p>
+    </header>
+
+    <main>
+      <section id="config">
+        <label>
+          model
+          <select id="variant">
+            <option value="int4">INT4 (~256 MB)</option>
+          </select>
+        </label>
+        <label>
+          <input type="checkbox" id="grammar" checked />
+          incremental grammar constraint
+        </label>
+        <label>
+          backend
+          <select id="backend">
+            <option value="webgpu">WebGPU (fast)</option>
+            <option value="wasm">WASM (compatible)</option>
+          </select>
+        </label>
+      </section>
+
+      <section id="drop">
+        <input type="file" id="file" accept="image/*" hidden />
+        <p>drop a formula image here, paste from clipboard, or <button id="pick">choose file</button></p>
+      </section>
+
+      <section id="status" hidden>
+        <progress id="progress" max="100"></progress>
+        <span id="status-text"></span>
+      </section>
+
+      <section id="result" hidden>
+        <div class="panel">
+          <h3>input</h3>
+          <img id="input-img" alt="input formula" />
+        </div>
+        <div class="panel">
+          <h3>rendered LaTeX</h3>
+          <div id="rendered"></div>
+        </div>
+        <div class="panel full">
+          <h3>LaTeX output <button id="copy">copy</button></h3>
+          <pre id="latex-out"></pre>
+          <p id="verdict"></p>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <a href="https://github.com/LastByteLLC/latextract">GitHub</a> ·
+      <span id="commit">build dev</span>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
