@@ -1,0 +1,175 @@
+// Lark grammar for a constrained subset of display-mode math LaTeX.
+// Goal: cover ~90% of arXiv display math without admitting macro definitions
+// or ambient text-mode features that wreck round-trip rendering.
+//
+// Status: STARTER. Tested against the math.DG manifest in scripts/test_grammar.py;
+// known gaps documented inline as TODOs. Grow conservatively — every addition
+// expands the surface that the model can hallucinate.
+//
+// Conventions:
+//   - Uppercase rules are tokens (lexer).
+//   - Lowercase rules are productions (parser).
+//   - Whitespace is significant inside `_{...}` etc., so we explicitly match it.
+
+start: display_math
+
+display_math: BSLASH "[" expr BSLASH "]"
+            | "\\begin{equation*}" expr "\\end{equation*}"
+            | "\\begin{equation}" expr "\\end{equation}"
+            | "\\begin{align*}" align_body "\\end{align*}"
+            | "\\begin{align}" align_body "\\end{align}"
+            | "\\begin{gather*}" gather_body "\\end{gather*}"
+            | "\\begin{gather}" gather_body "\\end{gather}"
+            | "\\begin{split}" align_body "\\end{split}"
+            | "\\begin{cases}" align_body "\\end{cases}"
+            | "\\begin{multline*}" gather_body "\\end{multline*}"
+            | "\\begin{multline}" gather_body "\\end{multline}"
+
+align_body: aligned_expr (LINEBREAK aligned_expr)*
+aligned_expr: expr ("&" expr)*
+gather_body: expr (LINEBREAK expr)*
+
+// Top-level expression: a sequence of atoms with optional binary operators
+// glued in. We do NOT model precedence here — the model emits visually-correct
+// strings; precedence is the renderer's job.
+expr: atom (binop? atom)*
+
+atom: simple_atom (script*)?
+
+simple_atom: identifier
+           | number
+           | function
+           | greek
+           | bigop
+           | fraction
+           | sqrt
+           | accent
+           | math_font
+           | grouped
+           | bracket_pair
+           | bare_paren
+           | spacing
+           | misc_command
+           | bar_delim
+           | prime
+
+script: "_" script_arg
+      | "^" script_arg
+script_arg: "{" expr "}"
+          | LETTER
+          | DIGIT
+          | greek
+          | "+" | "-" | "*" | "'" | "\\prime" | "\\dagger" | "\\circ"
+          | "\\infty" | "\\top" | "\\bot"
+
+grouped: "{" expr "}"
+
+// --- atoms --------------------------------------------------------------
+
+identifier: LETTER
+
+number: DIGIT (DIGIT | ".")*
+
+// Trig / logs / limits / etc — common mathematical functions
+function: "\\sin" | "\\cos" | "\\tan" | "\\sec" | "\\csc" | "\\cot"
+        | "\\arcsin" | "\\arccos" | "\\arctan"
+        | "\\sinh" | "\\cosh" | "\\tanh"
+        | "\\log" | "\\ln" | "\\exp"
+        | "\\lim" | "\\limsup" | "\\liminf"
+        | "\\sup" | "\\inf" | "\\max" | "\\min"
+        | "\\det" | "\\dim" | "\\ker" | "\\hom"
+        | "\\gcd" | "\\arg" | "\\deg" | "\\Re" | "\\Im"
+        | "\\Pr" | "\\mod"
+
+greek: "\\alpha" | "\\beta" | "\\gamma" | "\\delta" | "\\epsilon" | "\\varepsilon"
+     | "\\zeta" | "\\eta" | "\\theta" | "\\vartheta" | "\\iota" | "\\kappa"
+     | "\\lambda" | "\\mu" | "\\nu" | "\\xi" | "\\pi" | "\\varpi"
+     | "\\rho" | "\\varrho" | "\\sigma" | "\\varsigma" | "\\tau"
+     | "\\upsilon" | "\\phi" | "\\varphi" | "\\chi" | "\\psi" | "\\omega"
+     | "\\Gamma" | "\\Delta" | "\\Theta" | "\\Lambda" | "\\Xi"
+     | "\\Pi" | "\\Sigma" | "\\Upsilon" | "\\Phi" | "\\Psi" | "\\Omega"
+
+bigop: "\\sum" | "\\prod" | "\\coprod"
+     | "\\int" | "\\iint" | "\\iiint" | "\\oint"
+     | "\\bigcup" | "\\bigcap" | "\\bigsqcup" | "\\biguplus"
+     | "\\bigvee" | "\\bigwedge"
+     | "\\bigotimes" | "\\bigoplus"
+
+fraction: ("\\frac" | "\\dfrac" | "\\tfrac" | "\\binom") "{" expr "}" "{" expr "}"
+
+sqrt: "\\sqrt" ("[" expr "]")? "{" expr "}"
+
+accent: ("\\bar" | "\\hat" | "\\tilde" | "\\vec" | "\\dot" | "\\ddot"
+       | "\\widehat" | "\\widetilde" | "\\overline" | "\\underline"
+       | "\\overbrace" | "\\underbrace") "{" expr "}"
+
+math_font: ("\\mathbb" | "\\mathcal" | "\\mathfrak" | "\\mathrm"
+          | "\\mathbf" | "\\mathit" | "\\mathsf" | "\\mathtt"
+          | "\\boldsymbol" | "\\bm" | "\\operatorname" | "\\text") "{" expr "}"
+
+bracket_pair: "\\left" delim expr "\\right" delim
+delim: "(" | ")" | "[" | "]" | "\\{" | "\\}" | "|" | "\\|"
+     | "\\langle" | "\\rangle" | "."
+
+// Bare parentheses, brackets, and braces (no \left/\right scaling).
+bare_paren: "(" expr ")"
+          | "[" expr "]"
+          | "\\{" expr "\\}"
+          | "\\langle" expr "\\rangle"
+
+// |x|, \vert x \vert, \Vert x \Vert, \|x\|: vertical-bar absolute-value style
+bar_delim: "|" expr "|"
+         | "\\vert" expr "\\vert"
+         | "\\Vert" expr "\\Vert"
+         | "\\|" expr "\\|"
+
+prime: "'"
+
+spacing: "\\," | "\\;" | "\\:" | "\\!" | "\\quad" | "\\qquad"
+       | "\\ " | "\\\\" | "~"
+
+misc_command: "\\ldots" | "\\cdots" | "\\vdots" | "\\ddots"
+            | "\\infty" | "\\partial" | "\\nabla"
+            | "\\emptyset" | "\\varnothing" | "\\forall" | "\\exists" | "\\nexists"
+            | "\\circ" | "\\bullet" | "\\star" | "\\ast"
+            | "\\prime" | "\\dagger" | "\\ddagger"
+            | "\\backslash" | "\\hbar" | "\\imath" | "\\jmath" | "\\aleph"
+            | "\\Re" | "\\Im" | "\\wp" | "\\angle" | "\\triangle"
+            | "\\nolimits" | "\\limits"
+
+// --- binary operators / relations --------------------------------------
+
+binop: REL_OP | ARITH_OP | SET_OP | LOGIC_OP | ARROW_OP | NAMED_BINOP
+
+REL_OP: "=" | "<" | ">" | "\\leq" | "\\geq" | "\\le" | "\\ge"
+      | "\\neq" | "\\ne" | "\\equiv" | "\\sim" | "\\simeq"
+      | "\\approx" | "\\cong" | "\\propto" | "\\preceq" | "\\succeq"
+      | "\\models" | "\\vdash" | "\\dashv"
+
+ARITH_OP: "+" | "-" | "*" | "/" | "\\pm" | "\\mp" | "\\cdot" | "\\times" | "\\div"
+        | "\\oplus" | "\\otimes" | "\\ominus" | "\\oslash" | "\\odot"
+        | "\\star" | "\\bullet" | "\\ast" | "\\circ"
+
+SET_OP: "\\in" | "\\notin" | "\\ni" | "\\subset" | "\\supset"
+      | "\\subseteq" | "\\supseteq" | "\\cup" | "\\cap" | "\\setminus"
+      | "\\sqcup" | "\\sqcap"
+
+LOGIC_OP: "\\land" | "\\lor" | "\\neg" | "\\lnot" | "\\implies"
+        | "\\iff" | "\\Rightarrow" | "\\Leftarrow" | "\\Leftrightarrow"
+
+ARROW_OP: "\\to" | "\\rightarrow" | "\\leftarrow" | "\\leftrightarrow"
+        | "\\mapsto" | "\\hookrightarrow" | "\\twoheadrightarrow"
+        | "\\longrightarrow" | "\\longleftarrow" | "\\longmapsto"
+        | "\\uparrow" | "\\downarrow" | "\\updownarrow"
+
+NAMED_BINOP: "," | ";" | ":" | "."
+
+// --- terminals ----------------------------------------------------------
+
+LETTER: /[a-zA-Z]/
+DIGIT: /[0-9]/
+BSLASH: "\\"
+LINEBREAK: "\\\\"
+
+// Whitespace: ignored where allowed
+%ignore /[ \t\n\r]+/
