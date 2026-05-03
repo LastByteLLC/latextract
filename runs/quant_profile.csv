@@ -1,0 +1,4 @@
+variant,size_mb,mean_latency_ms,p95_latency_ms,grammar_pass_pct,banlist_clean,n_samples
+int8,951.0,1023,1842,55.0,75.0,20
+int4,256.0,1197,1835,50.0,85.0,20
+int2,182.2,,,,,
