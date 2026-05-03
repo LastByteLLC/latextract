@@ -36,19 +36,13 @@ jobs:
           cache: "npm"
           cache-dependency-path: web/package-lock.json
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
-      # Note: we intentionally do NOT run lark-js here. Our grammar uses
-      # Earley constructs (rules `function` and `misc_command` overlap on
-      # `\Re`, `\Im`, etc.) and lark-js only emits LALR parsers, producing 20+
-      # reduce/reduce collisions and no output. The browser logits processor
-      # falls back to a heuristic prefix check (brace balance + banlist) when
-      # parser.js is missing — see web/src/grammar/incremental.ts.
-      # TODO: port the grammar to nearley.js or run the Python Lark via Pyodide
-      # to enable full CFG enforcement in the browser.
+      # Note: deploy is Node-only. We previously ran lark-js to compile the
+      # Lark CFG to JS, but the grammar uses Earley constructs (`function` and
+      # `misc_command` overlap on `\Re`, `\Im`, etc.) and lark-js only emits
+      # LALR — the compile produces 20+ reduce/reduce collisions and no
+      # output. The browser logits processor falls back to a heuristic prefix
+      # check (brace balance + banlist) when parser.js is missing.
+      # TODO: port to nearley.js or Pyodide to enable full CFG in the browser.
 
       - name: Install web deps
         working-directory: web
