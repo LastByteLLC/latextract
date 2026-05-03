@@ -58,6 +58,6 @@ def render_latex(snippet: str, dpi: int = 200, timeout: int = 60) -> Image.Image
             pix = page.get_pixmap(matrix=mat, alpha=False)
             mode = "RGB" if pix.n == 3 else "RGBA"
             img = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
-            return img.convert("RGB")
+            return img.convert("L")  # math is monochrome — saves ~3x on PNG storage
         finally:
             doc.close()
