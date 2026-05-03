@@ -199,17 +199,27 @@ export class LatexOCR {
     }
 
     // generate() in transformers.js v3 takes inputs + generation_config + logits_processor.
-    const output = await (this.model as unknown as {
-      generate: (args: Record<string, unknown>) => Promise<{ sequences?: number[][] } | number[][]>;
+    // Returns a Tensor of shape [batch, seq_len] (int64) by default; if
+    // generation_config.return_dict_in_generate is set it returns { sequences, ... }.
+    type GenTensor = {
+      dims: number[];
+      data: BigInt64Array | Int32Array | number[];
+      tolist: () => Array<Array<bigint | number>>;
+    };
+    const output = (await (this.model as unknown as {
+      generate: (args: Record<string, unknown>) => Promise<GenTensor | { sequences: GenTensor }>;
     }).generate({
       inputs: pixel_values,
       generation_config: generationConfig,
       logits_processor: logitsProcessors,
-    });
+    })) as GenTensor | { sequences: GenTensor };
 
-    const seq: number[] = Array.isArray(output)
-      ? (output[0] as number[])
-      : ((output as { sequences?: number[][] }).sequences?.[0] ?? []);
+    const seqTensor: GenTensor =
+      "sequences" in (output as { sequences?: GenTensor }) && (output as { sequences?: GenTensor }).sequences
+        ? (output as { sequences: GenTensor }).sequences
+        : (output as GenTensor);
+    const rows = seqTensor.tolist();
+    const seq: number[] = (rows[0] ?? []).map((x) => Number(x));
 
     const raw = this.tokenizer.decode(seq, { skip_special_tokens: true }) as string;
     const cleaned = stripArtifacts(raw);
